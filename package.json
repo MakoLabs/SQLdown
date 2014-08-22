@@ -20,7 +20,7 @@
     "double-ended-queue": "^2.0.0-0",
     "through2": "^0.5.1",
     "abstract-leveldown": "^0.12.3",
-    "knex": "calvinmetcalf/knex#create-if-not",
+    "knex": "git+https://github.com/calvinmetcalf/knex#create-if-not",
     "es3ify": "^0.1.3"
   },
   "devDependencies": {
