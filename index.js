@@ -147,6 +147,9 @@ SQLdown.prototype._get = function (key, options, cb) {
   });
 };
 SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
+  if (typeof opt == 'function')
+    cb = opt;
+    
   var self = this;
   if (!this._isBuffer(rawvalue) && process.browser  && typeof rawvalue !== 'object') {
     rawvalue = String(rawvalue);
@@ -160,9 +163,14 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
   }).nodeify(cb);
 };
 SQLdown.prototype._del = function (key, opt, cb) {
+  if (typeof opt == 'function')
+    cb = opt;
   this.db(this.tablename).where({key: key}).delete().exec(cb);
 };
 SQLdown.prototype._batch = function (array, options, callback) {
+  if (typeof options == 'function')
+    callback = options;
+
   var self = this;
   var inserts = 0;
   this.db.transaction(function (trx) {
