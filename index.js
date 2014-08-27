@@ -49,6 +49,7 @@ function SQLdown(location) {
   }
   AbstractLevelDOWN.call(this, location);
   this.db = this.counter = this.dbType = this.compactFreq = this.tablename = void 0;
+  this.disableCompact = false;
 }
 SQLdown.destroy = function (location, options, callback) {
   if (typeof options === 'function') {
@@ -74,13 +75,14 @@ SQLdown.prototype._open = function (options, callback) {
   this.db = knex(conn);
   this.tablename = getTableName(this.location, options);
   this.compactFreq = options.compactFrequency || 25;
+  this.disableCompact = options.disableCompact || false;
   this.counter = 0;
   var tableCreation;
-  if (process.browser || (self.dbType === 'mysql' && !options.keySize)) {
+  if (process.browser || self.dbType === 'mysql') {
     tableCreation = this.db.schema.createTableIfNotExists(self.tablename, function (table) {
       table.increments('id').primary();
       if (options.keySize){
-        table.string('key', options.keySize);
+        table.string('key', options.keySize).index();
       } else {
         table.text('key');
       }
@@ -120,10 +122,14 @@ SQLdown.prototype._open = function (options, callback) {
 SQLdown.prototype._get = function (key, options, cb) {
   var self = this;
   var asBuffer = true;
-  if (options.asBuffer === false) {
+  if (typeof options == 'function'){
+    cb = options;
+    options = null;
+  }
+  if (options && options.asBuffer === false) {
     asBuffer = false;
   }
-  if (options.raw) {
+  if (options && options.raw) {
     asBuffer = false;
   }
   this.db.select('value').from(this.tablename).whereIn('id', function (){
@@ -199,6 +205,7 @@ SQLdown.prototype.compact = function () {
 };
 
 SQLdown.prototype.maybeCompact = function (inserts) {
+  if(this.disableCompact) return Promise.resolve();
   if (inserts + this.counter > this.compactFreq) {
     this.counter += inserts;
     this.counter %= this.compactFreq;
