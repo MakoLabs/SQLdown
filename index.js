@@ -7,6 +7,8 @@ var fs = require('fs');
 var Promise = require('bluebird');
 var url = require('url');
 var TABLENAME = 'sqldown';
+var bulkInsertBuffer = [];
+var bulkInsertBufferSize = 1;
 module.exports = SQLdown;
 function parseConnectionString(string) {
   if (process.browser) {
@@ -76,6 +78,7 @@ SQLdown.prototype._open = function (options, callback) {
   this.tablename = getTableName(this.location, options);
   this.compactFreq = options.compactFrequency || 25;
   this.disableCompact = options.disableCompact || false;
+  if('bulkInsertBufferSize' in options) bulkInsertBufferSize = options.bulkInsertBufferSize;
   this.counter = 0;
   var tableCreation;
   if (process.browser || self.dbType === 'mysql') {
@@ -161,12 +164,25 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
     rawvalue = String(rawvalue);
   }
   var value = JSON.stringify(rawvalue);
-  this.db(this.tablename).insert({
-    key: key,
-    value:value
-  }).then(function () {
-    return self.maybeCompact();
-  }).nodeify(cb);
+  if(bulkInsertBufferSize == 1){
+    this.db(this.tablename).insert({
+      key: key,
+      value:value
+    }).then(function () {
+      return self.maybeCompact();
+    }).nodeify(cb);
+  }else{
+    bulkInsertBuffer.push({ key: key, value:value });
+    if(bulkInsertBuffer.length >= bulkInsertBufferSize){
+      this.db(this.tablename).insert(bulkInsertBuffer).then(function () {
+        inserts += bulkInsertBuffer;
+        bulkInsertBuffer = [];
+      return self.maybeCompact();
+    }).nodeify(cb);
+    }else{
+      setImmediate(cb);
+    }
+  }
 };
 SQLdown.prototype._del = function (key, opt, cb) {
   if (typeof opt == 'function')
@@ -179,21 +195,63 @@ SQLdown.prototype._batch = function (array, options, callback) {
 
   var self = this;
   var inserts = 0;
-  this.db.transaction(function (trx) {
-    return Promise.all(array.map(function (item) {
-      if (item.type === 'del') {
-        return trx.where({key: item.key}).from(self.tablename).delete();
-      } else {
-        inserts++;
-        return trx.insert({
-          key: item.key,
-          value:JSON.stringify(item.value)
-        }).into(self.tablename);
+  
+  // check if we can do bulk inserts
+  var i, canBulkInsert = true;
+  if(bulkInsertBufferSize > 1){
+    for(i=0;i<array.length;i++){
+      if(array[i].type === 'del'){
+        canBulkInsert = false;
+        break;
       }
-    }));
-  }).then(function () {
-    return self.maybeCompact(inserts);
-  }).nodeify(callback);
+    }
+  }
+  
+  if(canBulkInsert){
+    for(i=0;i<array.length;i++){
+      bulkInsertBuffer.push({ key: array[i].key, value: JSON.stringify(array[i].value) });
+    }
+    if(bulkInsertBuffer.length >= bulkInsertBufferSize){
+      this.db.transaction(function (trx) {
+        return Promise.all(bulkInsertBuffer.map(function (item) {
+          inserts++;
+          return trx.insert(item).into(self.tablename);
+        }));
+      }).then(function () {
+        bulkInsertBuffer = [];
+        return self.maybeCompact(inserts);
+      }).nodeify(callback);
+    }else{
+      setImmediate(callback);
+    }
+  }else{
+    this.db.transaction(function (trx) {
+      return Promise.all(array.map(function (item) {
+        if (item.type === 'del') {
+          return trx.where({key: item.key}).from(self.tablename).delete();
+        } else {
+          inserts++;
+          if(bulkInsertBuffer.length > 0){
+            inserts += bulkInsertBuffer;
+            bulkInsertBuffer.push({
+              key: item.key,
+              value:JSON.stringify(item.value)
+            });
+            var tmp = bulkInsertBuffer;
+            bulkInsertBuffer = [];
+            return trx.insert(tmp).into(self.tablename);
+          }else{
+            return trx.insert({
+              key: item.key,
+              value:JSON.stringify(item.value)
+            }).into(self.tablename);
+          }
+        }
+      }));
+    }).then(function () {
+      return self.maybeCompact(inserts);
+    }).nodeify(callback);
+  }
 };
 SQLdown.prototype.compact = function () {
   var self = this;
@@ -229,4 +287,16 @@ SQLdown.prototype._close = function (callback) {
 
 SQLdown.prototype.iterator = function (options) {
   return new Iter(this, options);
+};
+
+SQLdown.prototype.flush = function(cb)
+{
+  if(bulkInsertBuffer.length > 0){
+    this.db(this.tablename).insert(bulkInsertBuffer).then(function () {
+      bulkInsertBuffer = [];
+      return self.maybeCompact();
+    }).nodeify(cb);
+  }else{
+    setImmediate(cb);
+  }
 };
