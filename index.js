@@ -232,7 +232,7 @@ SQLdown.prototype._batch = function (array, options, callback) {
         } else {
           inserts++;
           if(bulkInsertBuffer.length > 0){
-            inserts += bulkInsertBuffer;
+            inserts += bulkInsertBuffer.length;
             bulkInsertBuffer.push({
               key: item.key,
               value:JSON.stringify(item.value)
