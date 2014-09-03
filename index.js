@@ -78,14 +78,17 @@ SQLdown.prototype._open = function (options, callback) {
   this.tablename = getTableName(this.location, options);
   this.compactFreq = options.compactFrequency || 25;
   this.disableCompact = options.disableCompact || false;
-  if('bulkInsertBufferSize' in options) bulkInsertBufferSize = options.bulkInsertBufferSize;
+  if('bulkInsertBufferSize' in options){
+    bulkInsertBufferSize = options.bulkInsertBufferSize;
+      this.bulkMode = options.bulkMode || 'update';
+  }
   this.counter = 0;
   var tableCreation;
   if (process.browser || self.dbType === 'mysql') {
     tableCreation = this.db.schema.createTableIfNotExists(self.tablename, function (table) {
       table.increments('id').primary();
       if (options.keySize){
-        table.string('key', options.keySize).index();
+          table.string('key', options.keySize).unique();
       } else {
         table.text('key');
       }
@@ -135,9 +138,7 @@ SQLdown.prototype._get = function (key, options, cb) {
   if (options && options.raw) {
     asBuffer = false;
   }
-  this.db.select('value').from(this.tablename).whereIn('id', function (){
-    this.max('id').from(self.tablename).where({key:key});
-  }).exec(function (err, res) {
+  var onComplete = function (err, res) {
     if (err) {
       return cb(err.stack);
     }
@@ -153,7 +154,14 @@ SQLdown.prototype._get = function (key, options, cb) {
     } catch (e) {
       cb(new Error('NotFound'));
     }
-  });
+  };
+  if (self.dbType === 'mysql') {
+    this.db.select('value').from(this.tablename).where({key:key}).exec(onComplete);
+  }else{
+    this.db.select('value').from(this.tablename).whereIn('id', function (){
+      this.max('id').from(self.tablename).where({key:key});
+    }).exec(onComplete);
+  }
 };
 SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
   if (typeof opt == 'function')
@@ -165,12 +173,18 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
   }
   var value = JSON.stringify(rawvalue);
   if(bulkInsertBufferSize == 1){
-    this.db(this.tablename).insert({
-      key: key,
-      value:value
-    }).then(function () {
-      return self.maybeCompact();
-    }).nodeify(cb);
+      if(self.dbType === 'mysql'){
+	  this.db.raw("INSERT INTO "+this.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [key, value, value]).then(function () {
+	      return self.maybeCompact();
+	  }).nodeify(cb);
+      }else{
+	  this.db(this.tablename).insert({
+	      key: key,
+	      value:value
+	  }).then(function () {
+	      return self.maybeCompact();
+	  }).nodeify(cb);
+      }
   }else{
     bulkInsertBuffer.push({ key: key, value:value });
     if(bulkInsertBuffer.length >= bulkInsertBufferSize){
@@ -213,10 +227,16 @@ SQLdown.prototype._batch = function (array, options, callback) {
     }
     if(bulkInsertBuffer.length >= bulkInsertBufferSize){
       this.db.transaction(function (trx) {
-        return Promise.all(bulkInsertBuffer.map(function (item) {
-          inserts++;
-          return trx.insert(item).into(self.tablename);
-        }));
+        if(self.bulkMode == 'update' && self.dbType == 'mysql'){
+          return Promise.all(bulkInsertBuffer.map(function (item) {
+            inserts++;
+            //return trx.insert(item).into(self.tablename);
+  	    return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
+          }));
+	      }else{
+	        inserts += bulkInsertBuffer.length;
+	        return trx(self.tablename).insert(bulkInsertBuffer);
+	      }
       }).then(function () {
         bulkInsertBuffer = [];
         return self.maybeCompact(inserts);
@@ -263,7 +283,7 @@ SQLdown.prototype.compact = function () {
 };
 
 SQLdown.prototype.maybeCompact = function (inserts) {
-  if(this.disableCompact) return Promise.resolve();
+  if(this.disableCompact || this.dbType === 'mysql') return Promise.resolve();
   if (inserts + this.counter > this.compactFreq) {
     this.counter += inserts;
     this.counter %= this.compactFreq;
