@@ -26,7 +26,8 @@ var names = [
   'gt',
   'gte',
   'lt',
-  'lte'
+    'lte',
+'singular'
 ];
 function Iterator(db, options) {
   AbstractIterator.call(this, db);
@@ -82,9 +83,17 @@ Iterator.prototype._next = function (callback) {
 Iterator.prototype.buildSQL = function () {
   var self = this;
   var outersql = this._db.select('key', 'value').from(this.db.tablename);
+    if('singular' in this._options && 'start' in this._options && 'end' in this._options){
+	outersql.orderBy('key');
+	outersql.groupBy('key');
+	return outersql.whereBetween('key', [this._options.start, this._options.end]);
+    }else{
   var innerSQL = this._db.max('id').from(self.db.tablename).groupBy('key');
   if (this._order)  {
     outersql.orderBy('key');
+      if('start' in this._options && 'end' in this._options){
+	  innerSQL = innerSQL.whereBetween('key', [this._options.start, this._options.end]);
+      }else{
     if ('start' in this._options) {
       if (this._options.exclusiveStart) {
         if ('start' in this._options) {
@@ -99,8 +108,12 @@ Iterator.prototype.buildSQL = function () {
     if ('end' in this._options) {
       this._options.lte = this._options.end;
     }
+      }
   } else {
     outersql.orderBy('key', 'DESC');
+      if('start' in this._options && 'end' in this._options){
+	  innerSQL.whereBetween('key',[this._options.start, this._options.end]);
+      }else{
     if ('start' in this._options) {
       if (this._options.exclusiveStart) {
         if ('start' in this._options) {
@@ -115,6 +128,7 @@ Iterator.prototype.buildSQL = function () {
     if ('end' in this._options) {
       this._options.gte = this._options.end;
     }
+      }
   }
 
   if ('lt' in this._options) {
@@ -129,5 +143,6 @@ Iterator.prototype.buildSQL = function () {
   if ('gte' in this._options) {
     innerSQL.where('key','>=', this._options.gte);
   }
-  return outersql.whereIn('id', innerSQL);
+    return outersql.whereIn('id', innerSQL);
+    }
 };
