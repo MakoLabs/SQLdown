@@ -117,21 +117,7 @@ SQLdown.prototype._get = function (key, options, cb) {
       cb(new Error('NotFound'));
     }
   };
-  var fetch = function(){
-    self.db.select('value').from(self.tablename).where({key:key}).exec(onComplete);
-  };
-  
-  if(bulkBuffer.length > 0){
-    // must flush first
-    if(self.flushing != null){
-      // we wait for the flush to complete
-      self.flushing.then(fetch);
-    }else{
-      self.flush(fetch);
-    }
-  }else{
-    fetch();
-  }
+  self.db.select('value').from(self.tablename).where({key:key}).exec(onComplete);
 };
 
 SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
