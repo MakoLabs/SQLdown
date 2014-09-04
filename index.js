@@ -60,6 +60,7 @@ SQLdown.prototype._open = function (options, callback) {
   var self = this;
   var conn = parseConnectionString(this.location);
   this.dbType = conn.client;
+  if('pool' in options) conn['pool'] = options.pool;
   this.db = knex(conn);
   this.tablename = getTableName(this.location, options);
   this.compactFreq = options.compactFrequency || 25;
