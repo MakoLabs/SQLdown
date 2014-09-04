@@ -197,7 +197,7 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
         self.flush(cb);
       }else{
         // set the flush timeout if need be
-        if(!flushTimeout){
+        if(self.maxDelay > 0 && !flushTimeout){
           flushTimeout = setTimeout(function(){
       	    flushTimeout = null;
       	    self.flush.bind(self)();
@@ -235,7 +235,7 @@ SQLdown.prototype._del = function (key, opt, cb) {
         self.flush(cb);
       }else{
         // set the flush timeout if need be
-        if(!flushTimeout){
+        if(self.maxDelay > 0 && !flushTimeout){
           flushTimeout = setTimeout(function(){
       	    flushTimeout = null;
       	    self.flush.bind(self)();
@@ -276,7 +276,7 @@ SQLdown.prototype._batch = function (array, options, callback) {
         self.flush(callback);
       }else{
         // set the flush timeout if need be
-        if(!flushTimeout){
+        if(self.maxDelay > 0 && !flushTimeout){
           flushTimeout = setTimeout(function(){
       	    flushTimeout = null;
       	    self.flush.bind(self)();
