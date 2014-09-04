@@ -1,17 +1,17 @@
 {
-  "name": "sqldown",
-  "description": "A sqlite3 implementation of the LevelDOWN API",
-  "version": "1.2.0",
+  "name": "level-mysql",
+  "description": "A MySQL implementation of the LevelDOWN API",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/calvinmetcalf/sqldown.git"
+    "url": "https://github.com/MakoLabs/level-mysql.git"
   },
-  "homepage": "https://github.com/calvinmetcalf/sqldown",
+  "homepage": "https://github.com/MakoLabs/level-mysql",
   "keywords": [
     "leveldb",
     "leveldown",
     "levelup",
-    "sqlite"
+    "mysql"
   ],
   "main": "./index.js",
   "dependencies": {
@@ -25,24 +25,12 @@
   },
   "devDependencies": {
     "tap-spec": "^0.2.0",
-    "sqlite3": "^2.2.3",
-    "pg-query-stream": "^0.6.0",
-    "pg": "^3.3.0",
     "mysql": "^2.3.2",
-    "browserify": "^4.2.0",
     "prova": "^1.14.0"
   },
   "scripts": {
     "test": "prova ./test/test.js -p | tspec",
     "browser": "prova ./test/test.js -l chrome -bq"
   },
-  "license": "MIT",
-  "browser": {
-    "fs": false
-  },
-  "browserify": {
-    "transform": [
-      "es3ify"
-    ]
-  }
+  "license": "MIT"
 }
