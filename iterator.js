@@ -83,7 +83,6 @@ Iterator.prototype._next = function (callback) {
 Iterator.prototype.buildSQL = function () {
   var self = this;
   var outersql = this._db.select('key', 'value').from(this.db.tablename);
-  var innerSQL = this._db.max('id').from(self.db.tablename).groupBy('key');
   if (this._order)  {
     outersql.orderBy('key');
     if ('start' in this._options) {
@@ -118,42 +117,17 @@ Iterator.prototype.buildSQL = function () {
     }
   }
 
-  if(this._dbType == 'mysql'){
-  	/*
-    if(('gt' in this._options || 'gte' in this._options) && ('lt' in this._options || 'lte' in this._options)){
-      //return outersql.whereBetween('key', [this._options.lt || this._options.lte, this._options..gt || this._options.get]);
-    }else if('gt' in this._options || 'gte' in this._options){
-      //return outersql.whereBetween('key', [this._options.gt || this._options.gte, this._options..gt || this._options.get]);
-    }else if('lt' in this._options || 'lte' in this._options){
-      //return outersql.whereBetween('key', [this._options.lt || this._options.lte, this._options..gt || this._options.get]);
-    }
-    */
-    if ('lt' in this._options) {
-      outersql.where('key','<', this._options.lt);
-    }
-    if ('lte' in this._options) {
-      outersql.where('key','<=', this._options.lte);
-    }
-    if ('gt' in this._options) {
-      outersql.where('key','>', this._options.gt);
-    }
-    if ('gte' in this._options) {
-      outersql.where('key','>=', this._options.gte);
-    }
-    return outersql;
-  }else{
-    if ('lt' in this._options) {
-      innerSQL.where('key','<', this._options.lt);
-    }
-    if ('lte' in this._options) {
-      innerSQL.where('key','<=', this._options.lte);
-    }
-    if ('gt' in this._options) {
-      innerSQL.where('key','>', this._options.gt);
-    }
-    if ('gte' in this._options) {
-      innerSQL.where('key','>=', this._options.gte);
-    }
-    return outersql.whereIn('id', innerSQL);
+  if ('lt' in this._options) {
+    outersql.where('key','<', this._options.lt);
   }
+  if ('lte' in this._options) {
+    outersql.where('key','<=', this._options.lte);
+  }
+  if ('gt' in this._options) {
+    outersql.where('key','>', this._options.gt);
+  }
+  if ('gte' in this._options) {
+    outersql.where('key','>=', this._options.gte);
+  }
+  return outersql;
 };
