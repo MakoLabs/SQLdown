@@ -83,7 +83,6 @@ SQLdown.prototype._open = function (options, callback) {
   if('maxDelay' in options) try{ this.maxDelay = parseInt(options.maxDelay); }catch(err){}
   if('bulkBufferSize' in options){
     bulkBufferSize = options.bulkBufferSize;
-    this.bulkMode = options.bulkMode || 'update';
   }
   this.counter = 0;
   var tableCreation;
