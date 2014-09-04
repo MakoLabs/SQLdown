@@ -53,6 +53,7 @@ function SQLdown(location) {
   AbstractLevelDOWN.call(this, location);
   this.db = this.counter = this.dbType = this.compactFreq = this.tablename = void 0;
   this.maxDelay = 2500;
+  this.flushing = null;
   this.disableCompact = false;
 }
 SQLdown.destroy = function (location, options, callback) {
@@ -169,7 +170,12 @@ SQLdown.prototype._get = function (key, options, cb) {
   
   if(bulkBuffer.length > 0){
     // must flush first
-    self.flush(fetch);
+    if(self.flushing != null){
+      // we wait for the flush to complete
+      self.flushing.then(fetch);
+    }else{
+      self.flush(fetch);
+    }
   }else{
     fetch();
   }
@@ -185,18 +191,26 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
   }
   var value = JSON.stringify(rawvalue);
   if(bulkBufferSize > 0){
-    bulkBuffer.push({ type: 'put', key: key, value:value });
-    if(bulkBuffer.length >= bulkBufferSize){
-      self.flush(cb);
-    }else{
-      // set the flush timeout if need be
-      if(!flushTimeout){
-        flushTimeout = setTimeout(function(){
-      	  flushTimeout = null;
-      	  self.flush.bind(self)();
-        }, self.maxDelay);
+    var process = function(){
+      bulkBuffer.push({ type: 'put', key: key, value:value });
+      if(bulkBuffer.length >= bulkBufferSize){
+        self.flush(cb);
+      }else{
+        // set the flush timeout if need be
+        if(!flushTimeout){
+          flushTimeout = setTimeout(function(){
+      	    flushTimeout = null;
+      	    self.flush.bind(self)();
+          }, self.maxDelay);
+        }
+        setImmediate(cb);
       }
-      setImmediate(cb);
+    };
+    if(self.flushing != null){
+      // we wait for the flush to complete
+      self.flushing.then(process);
+    }else{
+      process();
     }
   }else{
     if(self.dbType === 'mysql'){
@@ -215,18 +229,26 @@ SQLdown.prototype._del = function (key, opt, cb) {
   if (typeof opt == 'function') cb = opt;
   var self = this;
   if(bulkBufferSize > 0){
-    bulkBuffer.push({ type: 'del', key: key });
-    if(bulkBuffer.length >= bulkBufferSize){
-      self.flush(cb);
-    }else{
-      // set the flush timeout if need be
-      if(!flushTimeout){
-        flushTimeout = setTimeout(function(){
-      	  flushTimeout = null;
-      	  self.flush.bind(self)();
-        }, self.maxDelay);
+    var process = function(){
+      bulkBuffer.push({ type: 'del', key: key });
+      if(bulkBuffer.length >= bulkBufferSize){
+        self.flush(cb);
+      }else{
+        // set the flush timeout if need be
+        if(!flushTimeout){
+          flushTimeout = setTimeout(function(){
+      	    flushTimeout = null;
+      	    self.flush.bind(self)();
+          }, self.maxDelay);
+        }
+        setImmediate(cb);
       }
-      setImmediate(cb);
+    };
+    if(self.flushing != null){
+      // we wait for the flush to complete
+      self.flushing.then(process);
+    }else{
+      process();
     }
   }else{
     this.db(this.tablename).where({key: key}).delete().exec(cb);
@@ -241,25 +263,33 @@ SQLdown.prototype._batch = function (array, options, callback) {
   var inserts = 0;
   
   if(bulkBufferSize > 0){
-    for(var i=0;i<array.length;i++){
-      if (array[i].type === 'del') {
-      	bulkBuffer.push({ type: 'del', key: array[i].key });
-      }else{
-        bulkBuffer.push({ type: 'put', key: array[i].key, value: JSON.stringify(array[i].value) });	
+    var process = function(){
+      for(var i=0;i<array.length;i++){
+        if (array[i].type === 'del') {
+          bulkBuffer.push({ type: 'del', key: array[i].key });
+        }else{
+          bulkBuffer.push({ type: 'put', key: array[i].key, value: JSON.stringify(array[i].value) });	
+        }
       }
-    }
     
-    if(bulkBuffer.length >= bulkBufferSize){
-      self.flush(callback);
-    }else{
-      // set the flush timeout if need be
-      if(!flushTimeout){
-        flushTimeout = setTimeout(function(){
-      	  flushTimeout = null;
-      	  self.flush.bind(self)();
-        }, self.maxDelay);
+      if(bulkBuffer.length >= bulkBufferSize){
+        self.flush(callback);
+      }else{
+        // set the flush timeout if need be
+        if(!flushTimeout){
+          flushTimeout = setTimeout(function(){
+      	    flushTimeout = null;
+      	    self.flush.bind(self)();
+          }, self.maxDelay);
+        }
+        setImmediate(callback);
       }
-      setImmediate(callback);
+    };
+    if(self.flushing != null){
+      // we wait for the flush to complete
+      self.flushing.then(process);
+    }else{
+      process();
     }
   }else{
     this.db.transaction(function (trx) {
@@ -336,24 +366,34 @@ SQLdown.prototype.flush = function(cb)
   var inserts = 0;
   if(bulkBuffer.length > 0){
     // need a transaction
-    this.db.transaction(function (trx){
-      return Promise.all(bulkBuffer.map(function (item){
-        if(item.type == 'del'){
-          return trx.where({key: item.key}).from(self.tablename).delete();		
-        }else{
-          if(self.dbType === 'mysql'){
-            return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
-          }else{
-            ++inserts;
-            return trx.insert({ key: item.key, value:JSON.stringify(item.value) }).into(self.tablename);
-          } 
-        }
-      }));
-    }).then(function () {
-      bulkBuffer = [];
-      return self.maybeCompact(inserts);
-    }).nodeify(cb);
+    if(self.flushing){
+    	if(cb) self.flushing.nodeify(cb);
+    	return;
+    }
+      self.flushing = new Promise(function(resolve, reject){
+	  var tx = self.db.transaction(function (trx){
+	      return Promise.all(bulkBuffer.map(function (item){
+		  if(item.type == 'del'){
+		      return trx.where({key: item.key}).from(self.tablename).delete();		
+		  }else{
+		      if(self.dbType === 'mysql'){
+			  return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
+		      }else{
+			  ++inserts;
+			  return trx.insert({ key: item.key, value: item.value }).into(self.tablename);
+		      } 
+		  }
+	      }));
+	  }).then(function () {
+	      var flushing = self.flushing;
+	      self.flushing = null;
+	      bulkBuffer = [];
+	      resolve(true);
+	      return self.maybeCompact(inserts);
+	  });
+	  if(cb) tx.nodeify(cb);
+      });
   }else{
-    setImmediate(cb);
+    if(cb) setImmediate(cb);
   }
 };
