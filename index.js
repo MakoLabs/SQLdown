@@ -7,8 +7,9 @@ var fs = require('fs');
 var Promise = require('bluebird');
 var url = require('url');
 var TABLENAME = 'sqldown';
-var bulkInsertBuffer = [];
-var bulkInsertBufferSize = 1;
+var bulkBuffer = [];
+var bulkBufferSize = 0;
+var flushTimeout = null;
 module.exports = SQLdown;
 function parseConnectionString(string) {
   if (process.browser) {
@@ -51,6 +52,7 @@ function SQLdown(location) {
   }
   AbstractLevelDOWN.call(this, location);
   this.db = this.counter = this.dbType = this.compactFreq = this.tablename = void 0;
+  this.maxDelay = 2500;
   this.disableCompact = false;
 }
 SQLdown.destroy = function (location, options, callback) {
@@ -78,9 +80,10 @@ SQLdown.prototype._open = function (options, callback) {
   this.tablename = getTableName(this.location, options);
   this.compactFreq = options.compactFrequency || 25;
   this.disableCompact = options.disableCompact || false;
-  if('bulkInsertBufferSize' in options){
-    bulkInsertBufferSize = options.bulkInsertBufferSize;
-      this.bulkMode = options.bulkMode || 'update';
+  if('maxDelay' in options) try{ this.maxDelay = parseInt(options.maxDelay); }catch(err){}
+  if('bulkBufferSize' in options){
+    bulkBufferSize = options.bulkBufferSize;
+    this.bulkMode = options.bulkMode || 'update';
   }
   this.counter = 0;
   var tableCreation;
@@ -155,14 +158,24 @@ SQLdown.prototype._get = function (key, options, cb) {
       cb(new Error('NotFound'));
     }
   };
-  if (self.dbType === 'mysql') {
-    this.db.select('value').from(this.tablename).where({key:key}).exec(onComplete);
+  var fetch = function(){
+    if (self.dbType === 'mysql') {
+      self.db.select('value').from(self.tablename).where({key:key}).exec(onComplete);
+    }else{
+      self.db.select('value').from(self.tablename).whereIn('id', function (){
+        this.max('id').from(self.tablename).where({key:key});
+      }).exec(onComplete);
+    }
+  };
+  
+  if(bulkBuffer.length > 0){
+    // must flush first
+    self.flush(fetch);
   }else{
-    this.db.select('value').from(this.tablename).whereIn('id', function (){
-      this.max('id').from(self.tablename).where({key:key});
-    }).exec(onComplete);
+    fetch();
   }
 };
+
 SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
   if (typeof opt == 'function')
     cb = opt;
@@ -172,37 +185,55 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
     rawvalue = String(rawvalue);
   }
   var value = JSON.stringify(rawvalue);
-  if(bulkInsertBufferSize == 1){
-      if(self.dbType === 'mysql'){
-	  this.db.raw("INSERT INTO "+this.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [key, value, value]).then(function () {
-	      return self.maybeCompact();
-	  }).nodeify(cb);
-      }else{
-	  this.db(this.tablename).insert({
-	      key: key,
-	      value:value
-	  }).then(function () {
-	      return self.maybeCompact();
-	  }).nodeify(cb);
-      }
-  }else{
-    bulkInsertBuffer.push({ key: key, value:value });
-    if(bulkInsertBuffer.length >= bulkInsertBufferSize){
-      this.db(this.tablename).insert(bulkInsertBuffer).then(function () {
-        inserts += bulkInsertBuffer;
-        bulkInsertBuffer = [];
-      return self.maybeCompact();
-    }).nodeify(cb);
+  if(bulkBufferSize > 0){
+    bulkBuffer.push({ type: 'put', key: key, value:value });
+    if(bulkBuffer.length >= bulkBufferSize){
+      flush(cb);
     }else{
+      // set the flush timeout if need be
+      if(!flushTimeout){
+        flushTimeout = setTimeout(function(){
+      	  flushTimeout = null;
+      	  self.flush.bind(self)();
+        }, self.maxDelay);
+      }
       setImmediate(cb);
+    }
+  }else{
+    if(self.dbType === 'mysql'){
+      this.db.raw("INSERT INTO "+this.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [key, value, value]).then(function () {
+        return self.maybeCompact(0);
+      }).nodeify(cb);
+    }else{
+      this.db(this.tablename).insert({ key: key, value:value }).then(function () { 
+      	return self.maybeCompact(1);
+      }).nodeify(cb);
     }
   }
 };
+
 SQLdown.prototype._del = function (key, opt, cb) {
-  if (typeof opt == 'function')
-    cb = opt;
-  this.db(this.tablename).where({key: key}).delete().exec(cb);
+  if (typeof opt == 'function') cb = opt;
+  var self = this;
+  if(bulkBufferSize > 0){
+    bulkBuffer.push({ type: 'del', key: key });
+    if(bulkBuffer.length >= bulkBufferSize){
+      this.flush(cb);
+    }else{
+      // set the flush timeout if need be
+      if(!flushTimeout){
+        flushTimeout = setTimeout(function(){
+      	  flushTimeout = null;
+      	  self.flush.bind(self)();
+        }, self.maxDelay);
+      }
+      setImmediate(cb);
+    }
+  }else{
+    this.db(this.tablename).where({key: key}).delete().exec(cb);
+  }
 };
+
 SQLdown.prototype._batch = function (array, options, callback) {
   if (typeof options == 'function')
     callback = options;
@@ -210,38 +241,25 @@ SQLdown.prototype._batch = function (array, options, callback) {
   var self = this;
   var inserts = 0;
   
-  // check if we can do bulk inserts
-  var i, canBulkInsert = true;
-  if(bulkInsertBufferSize > 1){
+  if(bulkBufferSize > 0){
     for(i=0;i<array.length;i++){
-      if(array[i].type === 'del'){
-        canBulkInsert = false;
-        break;
+      if (array[i].type === 'del') {
+      	bulkBuffer.push({ type: 'del', key: array[i].key });
+      }else{
+        bulkBuffer.push({ type: 'put', key: array[i].key, value: JSON.stringify(array[i].value) });	
       }
     }
-  }
-  
-  if(canBulkInsert){
-    for(i=0;i<array.length;i++){
-      bulkInsertBuffer.push({ key: array[i].key, value: JSON.stringify(array[i].value) });
-    }
-    if(bulkInsertBuffer.length >= bulkInsertBufferSize){
-      this.db.transaction(function (trx) {
-        if(self.bulkMode == 'update' && self.dbType == 'mysql'){
-          return Promise.all(bulkInsertBuffer.map(function (item) {
-            inserts++;
-            //return trx.insert(item).into(self.tablename);
-  	    return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
-          }));
-	      }else{
-	        inserts += bulkInsertBuffer.length;
-	        return trx(self.tablename).insert(bulkInsertBuffer);
-	      }
-      }).then(function () {
-        bulkInsertBuffer = [];
-        return self.maybeCompact(inserts);
-      }).nodeify(callback);
+    
+    if(bulkBuffer.length >= bulkBufferSize){
+      flush(callback);
     }else{
+      // set the flush timeout if need be
+      if(!flushTimeout){
+        flushTimeout = setTimeout(function(){
+      	  flushTimeout = null;
+      	  self.flush.bind(self)();
+        }, self.maxDelay);
+      }
       setImmediate(callback);
     }
   }else{
@@ -250,21 +268,11 @@ SQLdown.prototype._batch = function (array, options, callback) {
         if (item.type === 'del') {
           return trx.where({key: item.key}).from(self.tablename).delete();
         } else {
-          inserts++;
-          if(bulkInsertBuffer.length > 0){
-            inserts += bulkInsertBuffer.length;
-            bulkInsertBuffer.push({
-              key: item.key,
-              value:JSON.stringify(item.value)
-            });
-            var tmp = bulkInsertBuffer;
-            bulkInsertBuffer = [];
-            return trx.insert(tmp).into(self.tablename);
+          if(self.dbType === 'mysql'){
+      	    return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
           }else{
-            return trx.insert({
-              key: item.key,
-              value:JSON.stringify(item.value)
-            }).into(self.tablename);
+            ++inserts;
+	    return trx.insert({ key: item.key, value:JSON.stringify(item.value) }).into(self.tablename);
           }
         }
       }));
@@ -273,6 +281,7 @@ SQLdown.prototype._batch = function (array, options, callback) {
     }).nodeify(callback);
   }
 };
+
 SQLdown.prototype.compact = function () {
   var self = this;
   return this.db(this.tablename).select('key','value').not.whereIn('id', function () {
@@ -300,9 +309,18 @@ SQLdown.prototype.maybeCompact = function (inserts) {
 
 SQLdown.prototype._close = function (callback) {
   var self = this;
-  process.nextTick(function () {
-    self.db.destroy().exec(callback);
-  });
+  var done = function()
+  {
+    process.nextTick(function () {
+      self.db.destroy().exec(callback);
+    });
+  };
+  
+  if(bulkBuffer.length > 0){
+    self.flush(done);
+  }else{
+    done();
+  }
 };
 
 SQLdown.prototype.iterator = function (options) {
@@ -311,11 +329,31 @@ SQLdown.prototype.iterator = function (options) {
 
 SQLdown.prototype.flush = function(cb)
 {
-  if(bulkInsertBuffer.length > 0){
-    this.db(this.tablename).insert(bulkInsertBuffer).then(function () {
-      bulkInsertBuffer = [];
-      return self.maybeCompact();
-    }).nodeify(cb);
+  if(flushTimeout){
+    clearTimeout(flushTimeout);
+    flushTimeout = null;
+  }
+  var self = this;
+  var inserts = 0;
+  if(bulkBuffer.length > 0){
+    // need a transaction
+    this.db.transaction(function (trx){
+      return Promise.all(bulkBuffer.map(function (item){
+        if(item.type == 'del'){
+          return trx.where({key: item.key}).from(self.tablename).delete();		
+        }else{
+          if(self.dbType === 'mysql'){
+            return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
+          }else{
+            ++inserts;
+            return trx.insert({ key: item.key, value:JSON.stringify(item.value) }).into(self.tablename);
+          } 
+        }
+      }));
+    }).then(function () {
+      bulkBuffer = [];
+      return self.maybeCompact(inserts);
+    }).nodeify(callback);
   }else{
     setImmediate(cb);
   }
