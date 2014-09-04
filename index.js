@@ -241,7 +241,7 @@ SQLdown.prototype._batch = function (array, options, callback) {
   var inserts = 0;
   
   if(bulkBufferSize > 0){
-    for(i=0;i<array.length;i++){
+    for(var i=0;i<array.length;i++){
       if (array[i].type === 'del') {
       	bulkBuffer.push({ type: 'del', key: array[i].key });
       }else{
