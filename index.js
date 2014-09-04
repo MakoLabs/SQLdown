@@ -12,21 +12,8 @@ var bulkBufferSize = 0;
 var flushTimeout = null;
 module.exports = SQLdown;
 function parseConnectionString(string) {
-  if (process.browser) {
-    return {
-      client: 'websql'
-    };
-  }
   var parsed = url.parse(string);
   var protocol = parsed.protocol;
-  if(protocol === null) {
-    return {
-      client:'sqlite3',
-      connection: {
-        filename: string
-      }
-    };
-  }
   if (protocol.slice(-1) === ':') {
     protocol = protocol.slice(0, -1);
   }
@@ -62,10 +49,6 @@ SQLdown.destroy = function (location, options, callback) {
     options = {};
   }
   var conn = parseConnectionString(location);
-  if (conn.client === 'sqlite3') {
-    fs.unlink(location, callback);
-    return;
-  }
   var db = knex(conn);
   db.schema.dropTableIfExists(getTableName(location, options)).then(function () {
     return db.destroy();
@@ -86,9 +69,7 @@ SQLdown.prototype._open = function (options, callback) {
     bulkBufferSize = options.bulkBufferSize;
   }
   this.counter = 0;
-  var tableCreation;
-  if (process.browser || self.dbType === 'mysql') {
-    tableCreation = this.db.schema.createTableIfNotExists(self.tablename, function (table) {
+  var tableCreation = this.db.schema.createTableIfNotExists(self.tablename, function (table) {
       table.increments('id').primary();
       if (options.keySize){
           table.string('key', options.keySize).unique();
@@ -102,29 +83,6 @@ SQLdown.prototype._open = function (options, callback) {
         table.text('value');
       }
     });
-  } else {
-    tableCreation = this.db.schema.hasTable(self.tablename).then(function (exists){
-      if (exists) {
-        return true;
-      }
-      return self.db.schema.createTable(self.tablename, function (table) {
-        table.increments('id').primary().index();
-        if (options.keySize){
-          table.string('key', options.keySize).index();
-        } else if(self.dbType === 'mysql') {
-          table.text('key');  
-        } else {
-          table.text('key').index();
-        }
-          
-        if (options.valueSize){
-          table.string('value', options.valueSize);
-        } else {
-          table.text('value');
-        }
-      });
-    });
-  }
   tableCreation.nodeify(callback);
 };
 
@@ -159,13 +117,7 @@ SQLdown.prototype._get = function (key, options, cb) {
     }
   };
   var fetch = function(){
-    if (self.dbType === 'mysql') {
-      self.db.select('value').from(self.tablename).where({key:key}).exec(onComplete);
-    }else{
-      self.db.select('value').from(self.tablename).whereIn('id', function (){
-        this.max('id').from(self.tablename).where({key:key});
-      }).exec(onComplete);
-    }
+    self.db.select('value').from(self.tablename).where({key:key}).exec(onComplete);
   };
   
   if(bulkBuffer.length > 0){
@@ -213,15 +165,9 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
       process();
     }
   }else{
-    if(self.dbType === 'mysql'){
-      this.db.raw("INSERT INTO "+this.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [key, value, value]).then(function () {
-        return self.maybeCompact(0);
-      }).nodeify(cb);
-    }else{
-      this.db(this.tablename).insert({ key: key, value:value }).then(function () { 
-      	return self.maybeCompact(1);
-      }).nodeify(cb);
-    }
+    this.db.raw("INSERT INTO "+this.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [key, value, value]).then(function () {
+      return self.maybeCompact(0);
+    }).nodeify(cb);
   }
 };
 
@@ -297,12 +243,7 @@ SQLdown.prototype._batch = function (array, options, callback) {
         if (item.type === 'del') {
           return trx.where({key: item.key}).from(self.tablename).delete();
         } else {
-          if(self.dbType === 'mysql'){
-      	    return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
-          }else{
-            ++inserts;
-	    return trx.insert({ key: item.key, value:JSON.stringify(item.value) }).into(self.tablename);
-          }
+    	  return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
         }
       }));
     }).then(function () {
@@ -312,28 +253,11 @@ SQLdown.prototype._batch = function (array, options, callback) {
 };
 
 SQLdown.prototype.compact = function () {
-  var self = this;
-  return this.db(this.tablename).select('key','value').not.whereIn('id', function () {
-    this.select('id').from(function () {
-      this.select(self.db.raw('max(id) as id')).from(self.tablename).groupBy('key').as('__tmp__table');
-    });
-  }).delete();
+  return Promise.resolve();
 };
 
 SQLdown.prototype.maybeCompact = function (inserts) {
-  if(this.disableCompact || this.dbType === 'mysql') return Promise.resolve();
-  if (inserts + this.counter > this.compactFreq) {
-    this.counter += inserts;
-    this.counter %= this.compactFreq;
-    return this.compact();
-  }
-  this.counter++;
-  this.counter %= this.compactFreq;
-  if (this.counter) {
-    return Promise.resolve();
-  } else {
-    return this.compact();
-  }
+  return Promise.resolve();
 };
 
 SQLdown.prototype._close = function (callback) {
@@ -376,12 +300,7 @@ SQLdown.prototype.flush = function(cb)
 		  if(item.type == 'del'){
 		      return trx.where({key: item.key}).from(self.tablename).delete();		
 		  }else{
-		      if(self.dbType === 'mysql'){
-			  return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
-		      }else{
-			  ++inserts;
-			  return trx.insert({ key: item.key, value: item.value }).into(self.tablename);
-		      } 
+		      return trx.raw("INSERT INTO "+self.tablename+" (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?", [item.key, item.value, item.value]);
 		  }
 	      }));
 	  }).then(function () {
