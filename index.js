@@ -352,7 +352,7 @@ SQLdown.prototype.flush = function(cb)
     }).then(function () {
       bulkBuffer = [];
       return self.maybeCompact(inserts);
-    }).nodeify(callback);
+    }).nodeify(cb);
   }else{
     setImmediate(cb);
   }
