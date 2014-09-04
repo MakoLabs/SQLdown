@@ -187,7 +187,7 @@ SQLdown.prototype._put = function (key, rawvalue, opt, cb) {
   if(bulkBufferSize > 0){
     bulkBuffer.push({ type: 'put', key: key, value:value });
     if(bulkBuffer.length >= bulkBufferSize){
-      flush(cb);
+      self.flush(cb);
     }else{
       // set the flush timeout if need be
       if(!flushTimeout){
@@ -217,7 +217,7 @@ SQLdown.prototype._del = function (key, opt, cb) {
   if(bulkBufferSize > 0){
     bulkBuffer.push({ type: 'del', key: key });
     if(bulkBuffer.length >= bulkBufferSize){
-      this.flush(cb);
+      self.flush(cb);
     }else{
       // set the flush timeout if need be
       if(!flushTimeout){
@@ -250,7 +250,7 @@ SQLdown.prototype._batch = function (array, options, callback) {
     }
     
     if(bulkBuffer.length >= bulkBufferSize){
-      flush(callback);
+      self.flush(callback);
     }else{
       // set the flush timeout if need be
       if(!flushTimeout){
