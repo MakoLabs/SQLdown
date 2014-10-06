@@ -12,6 +12,7 @@ function IterStream(stream) {
   var self = this;
   EE.call(self);
   this.stream = stream;
+  stream.on('error', function(err){ self.emit('error', err); });
   this.queue = new Queue();
   this.stream.pipe(through(function (chunk, _, next) {
     if (self.queue.isEmpty()) {
